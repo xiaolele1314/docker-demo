@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS visitors (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip VARCHAR(64),
+    path VARCHAR(256),
+    visited_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO visitors (ip, path) VALUES ('127.0.0.1', '/init');

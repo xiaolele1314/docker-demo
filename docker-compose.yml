@@ -1,0 +1,82 @@
+version: "3.8"
+
+services:
+  # ========== MySQL ==========
+  mysql:
+    image: mysql:8.0
+    container_name: demo-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: demo
+      MYSQL_USER: demo
+      MYSQL_PASSWORD: demo123
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - demo-net
+
+  # ========== Redis ==========
+  redis:
+    image: redis:7-alpine
+    container_name: demo-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - demo-net
+
+  # ========== Python API (连接 MySQL + Redis) ==========
+  api:
+    build: ./app
+    container_name: demo-api
+    ports:
+      - "5000:5000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: demo
+      MYSQL_PASSWORD: demo123
+      MYSQL_DB: demo
+      REDIS_HOST: redis
+    networks:
+      - demo-net
+
+  # ========== Nginx (反向代理 + 静态页面) ==========
+  nginx:
+    image: nginx:alpine
+    container_name: demo-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx/html:/usr/share/nginx/html
+    depends_on:
+      - api
+    networks:
+      - demo-net
+
+volumes:
+  mysql_data:
+  redis_data:
+
+networks:
+  demo-net:
+    driver: bridge

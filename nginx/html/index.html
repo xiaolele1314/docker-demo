@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker Multi-Service Demo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; padding: 2rem; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #38bdf8; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .card { background: #1e293b; border-radius: 8px; padding: 1.2rem; border: 1px solid #334155; }
+        .card h2 { font-size: 1rem; color: #94a3b8; margin-bottom: .8rem; }
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .dot.ok { background: #22c55e; }
+        .dot.err { background: #ef4444; }
+        pre { background: #0f172a; padding: .8rem; border-radius: 4px; font-size: .85rem; overflow-x: auto; color: #cbd5e1; }
+        button { background: #2563eb; color: #fff; border: none; padding: .5rem 1.2rem; border-radius: 6px; cursor: pointer; font-size: .9rem; margin-bottom: 1rem; }
+        button:hover { background: #1d4ed8; }
+        #visitors { margin-top: 1rem; }
+        table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+        th, td { padding: .5rem .8rem; text-align: left; border-bottom: 1px solid #334155; }
+        th { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <h1>Docker Compose Multi-Service Demo</h1>
+
+    <div class="cards">
+        <div class="card">
+            <h2>Service Health</h2>
+            <div id="health">Loading...</div>
+        </div>
+        <div class="card">
+            <h2>Visit Counter</h2>
+            <button onclick="recordVisit()">Click to Visit</button>
+            <pre id="visit-result">click the button</pre>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Recent Visitors (MySQL)</h2>
+        <div id="visitors">Loading...</div>
+    </div>
+
+    <script>
+        async function checkHealth() {
+            try {
+                const res = await fetch('/api/health');
+                const data = await res.json();
+                document.getElementById('health').innerHTML =
+                    `<p><span class="dot ${data.mysql === 'ok' ? 'ok' : 'err'}"></span>MySQL: ${data.mysql}</p>` +
+                    `<p><span class="dot ${data.redis === 'ok' ? 'ok' : 'err'}"></span>Redis: ${data.redis}</p>`;
+            } catch (e) {
+                document.getElementById('health').innerHTML = '<p><span class="dot err"></span>API unreachable</p>';
+            }
+        }
+
+        async function recordVisit() {
+            const res = await fetch('/api/visit');
+            const data = await res.json();
+            document.getElementById('visit-result').textContent = JSON.stringify(data, null, 2);
+            loadVisitors();
+        }
+
+        async function loadVisitors() {
+            try {
+                const res = await fetch('/api/visitors');
+                const rows = await res.json();
+                if (!rows.length) { document.getElementById('visitors').innerHTML = 'No data'; return; }
+                let html = '<table><tr><th>ID</th><th>IP</th><th>Path</th><th>Time</th></tr>';
+                rows.forEach(r => { html += `<tr><td>${r.id}</td><td>${r.ip}</td><td>${r.path}</td><td>${r.visited_at}</td></tr>`; });
+                html += '</table>';
+                document.getElementById('visitors').innerHTML = html;
+            } catch (e) {
+                document.getElementById('visitors').innerHTML = 'Failed to load';
+            }
+        }
+
+        checkHealth();
+        loadVisitors();
+    </script>
+</body>
+</html>
