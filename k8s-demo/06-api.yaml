@@ -1,0 +1,148 @@
+# API 部署（用公开的 Python 镜像 + 启动命令模拟）
+# 实际项目中 image 换成你构建推送到镜像仓库的镜像
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: demo
+  labels:
+    app: api
+spec:
+  replicas: 2                    # 2 个副本，演示负载均衡
+  selector:
+    matchLabels:
+      app: api
+
+  # 滚动更新策略
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                # 更新时最多多出 1 个 Pod
+      maxUnavailable: 0          # 更新时不允许少 Pod → 零停机
+
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      # 初始化容器：等 MySQL 就绪后再启动主容器
+      initContainers:
+        - name: wait-mysql
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z mysql 3306; do echo waiting for mysql; sleep 2; done']
+
+      containers:
+        - name: api
+          image: python:3.11-slim
+          ports:
+            - containerPort: 5000
+
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              pip install flask pymysql redis cryptography -q &&
+              cat > /app/server.py << 'PYEOF'
+              import os, json
+              from datetime import datetime
+              from flask import Flask, request, jsonify
+              import pymysql, redis
+
+              app = Flask(__name__)
+
+              def get_db():
+                  return pymysql.connect(host=os.environ["MYSQL_HOST"], user=os.environ["MYSQL_USER"],
+                      password=os.environ["MYSQL_PASSWORD"], database=os.environ["MYSQL_DB"],
+                      cursorclass=pymysql.cursors.DictCursor)
+
+              def get_redis():
+                  return redis.Redis(host=os.environ["REDIS_HOST"], port=6379, decode_responses=True)
+
+              @app.route("/api/health")
+              def health():
+                  s = {"mysql": "ok", "redis": "ok", "pod": os.environ.get("HOSTNAME", "unknown")}
+                  try: get_db().close()
+                  except Exception as e: s["mysql"] = str(e)
+                  try: get_redis().ping()
+                  except Exception as e: s["redis"] = str(e)
+                  return jsonify(s)
+
+              @app.route("/api/visit")
+              def visit():
+                  r = get_redis()
+                  count = r.incr("visit_count")
+                  db = get_db()
+                  try:
+                      with db.cursor() as cur:
+                          cur.execute("CREATE TABLE IF NOT EXISTS visitors (id INT AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(64), path VARCHAR(256), visited_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+                          cur.execute("INSERT INTO visitors (ip, path) VALUES (%s, %s)", (request.remote_addr, request.path))
+                          db.commit()
+                          cur.execute("SELECT COUNT(*) AS total FROM visitors")
+                          total = cur.fetchone()["total"]
+                  finally: db.close()
+                  return jsonify({"redis_count": count, "mysql_total": total, "pod": os.environ.get("HOSTNAME"), "time": datetime.now().isoformat()})
+
+              @app.route("/api/visitors")
+              def visitors():
+                  db = get_db()
+                  try:
+                      with db.cursor() as cur:
+                          cur.execute("CREATE TABLE IF NOT EXISTS visitors (id INT AUTO_INCREMENT PRIMARY KEY, ip VARCHAR(64), path VARCHAR(256), visited_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+                          cur.execute("SELECT * FROM visitors ORDER BY id DESC LIMIT 20")
+                          rows = cur.fetchall()
+                  finally: db.close()
+                  for r in rows:
+                      if isinstance(r.get("visited_at"), datetime): r["visited_at"] = r["visited_at"].isoformat()
+                  return jsonify(rows)
+
+              if __name__ == "__main__":
+                  app.run(host="0.0.0.0", port=5000)
+              PYEOF
+              python /app/server.py
+
+          # 从 ConfigMap 和 Secret 注入环境变量
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 5000
+            initialDelaySeconds: 40
+            periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: demo
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 5000
+      targetPort: 5000
+  type: ClusterIP

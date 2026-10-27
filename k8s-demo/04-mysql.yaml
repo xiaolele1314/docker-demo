@@ -1,0 +1,114 @@
+# MySQL 部署
+# 包含：Deployment（管理 Pod）+ Service（服务发现）+ PVC（数据持久化）
+---
+# PersistentVolumeClaim：申请持久化存储（类似 docker-compose 的 volumes）
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: demo
+spec:
+  accessModes:
+    - ReadWriteOnce          # 单节点读写
+  resources:
+    requests:
+      storage: 1Gi           # 申请 1G 存储
+
+---
+# Deployment：定义 Pod 模板和副本数
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: demo
+  labels:
+    app: mysql
+spec:
+  replicas: 1                # 副本数（MySQL 单实例就够）
+  selector:
+    matchLabels:
+      app: mysql             # 选择器，和 template.labels 匹配
+  template:                  # Pod 模板
+    metadata:
+      labels:
+        app: mysql           # Pod 的标签，Service 通过这个找到 Pod
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+
+          # 环境变量：从 ConfigMap 和 Secret 引用
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: MYSQL_DATABASE
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+
+          # 资源限制（调度核心概念）
+          # requests：调度器保证至少给这么多资源（影响调度决策）
+          # limits：最多能用这么多（超了就被杀）
+          resources:
+            requests:
+              cpu: 100m        # 0.1 核 CPU
+              memory: 256Mi    # 256MB 内存
+            limits:
+              cpu: 500m        # 最多 0.5 核
+              memory: 512Mi    # 最多 512MB
+
+          # 存活探针：检测容器是否卡死，失败就重启
+          livenessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 30     # 启动后等 30 秒再检查
+            periodSeconds: 10           # 每 10 秒检查一次
+
+          # 就绪探针：检测服务是否能接受流量，失败就从 Service 摘掉
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          # 挂载持久化存储
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: mysql-pvc
+
+---
+# Service：服务发现（类似 docker-compose 里的服务名通信）
+# 其他 Pod 用 "mysql:3306" 就能访问
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql                # 这个名字就是 DNS 域名
+  namespace: demo
+spec:
+  selector:
+    app: mysql               # 匹配 labels.app=mysql 的 Pod
+  ports:
+    - port: 3306             # Service 端口
+      targetPort: 3306       # Pod 端口
+  type: ClusterIP            # 只集群内部访问（默认）
